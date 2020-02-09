@@ -1,0 +1,14 @@
+extends layout.pug
+
+block content
+    div.admin
+        div
+            form(action="/admin/crawl", method="POST")
+                input(type="text", name="url", placeholder="Crawl URL")
+                input(type="submit", value="Submit")
+        div
+            a(href="/admin/domains") Domains
+
+        div
+            form(action="/admin/logout", method="POST")
+                input(type="submit", value="Log out")

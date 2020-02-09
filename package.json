@@ -1,0 +1,31 @@
+{
+  "name": "myrkheim",
+  "version": "1.0.0",
+  "description": "",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^5.4.3",
+    "chalk": "^3.0.0",
+    "connect-flash": "^0.1.1",
+    "cookie-session": "^1.4.0",
+    "date-fns": "^2.9.0",
+    "express": "^4.17.1",
+    "express-promise-router": "^3.0.3",
+    "got": "^10.4.0",
+    "mime-types": "^2.1.26",
+    "node-html-parser": "^1.2.4",
+    "pug": "^2.0.4",
+    "ramda": "^0.27.0",
+    "stemmer": "^1.0.5",
+    "stylus": "^0.54.7"
+  },
+  "scripts": {
+    "watch:styles": "stylus styles -w -o dist",
+    "build:styles": "stylus styles -c -o dist",
+    "watch:server": "nodemon src/index.js",
+    "dev": "npm run watch:styles & npm run watch:server"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.2"
+  }
+}

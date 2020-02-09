@@ -1,0 +1,4 @@
+config.toml
+db.sqlite3
+dist
+node_modules

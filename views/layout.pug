@@ -1,0 +1,16 @@
+html
+    head
+        title= title
+        link(rel="stylesheet", href="/dist/style.css")
+        meta(name="viewport", content="initial-scale=1.0, width=device-width")
+    body
+        .flashes
+            each flashArray, flashType in flashes
+                each flash in flashArray
+                    div(class=`flash flash-${flashType}`)= flash
+        if searchForm != false
+            form.search-form(action="/search", method="POST")
+                input.search-input(type="search", name="query", placeholder="Search")
+                input.search-button(type="submit", value="Search")
+        main
+            block content

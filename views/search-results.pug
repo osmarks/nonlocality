@@ -1,0 +1,23 @@
+extends layout.pug
+
+block content
+    div= `Searching for "${results.query}"`
+    div= `Completed in ${results.time}ms`
+
+    if results.list.length == 0
+        div No results.
+    else
+        h2 Results
+        table.search-results
+            tr
+                th(align="left") Page
+                th(align="left") Weight
+                th(align="left") Matches
+                th(align="left") Last crawled
+            each result in results.list
+                tr
+                    td
+                        a(href=result.url)= result.url
+                    td= result.weight
+                    td= result.tokens.map(t => `${t.token}:${t.weight}`).join(", ")
+                    td= result.updated
