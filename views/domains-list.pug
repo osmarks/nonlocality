@@ -9,6 +9,6 @@ block content
                 td
                     input(type="checkbox", name="enable", checked=domain.enabled, form=`domain-${domain.id}`)
                 td
-                    form(action="/domains", method="POST", id=`domain-${domain.id}`)
+                    form(method="POST", id=`domain-${domain.id}`)
                         input(type="submit", value="Save")
                         input(type="hidden", name="domain", value=domain.domain)

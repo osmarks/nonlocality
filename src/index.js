@@ -11,8 +11,9 @@ const log = require("./log.js")
 const DB = require("./db.js")
 const util = require("./util.js")
 const config = require("./config.js")
+const models = require("./models.js")
 
-setInterval(() => crawler.crawlRandom, config("crawler.crawl_delay", 1000))
+setInterval(() => crawler.crawlRandom(), config("crawler.crawl_delay", 1000))
 
 const server = express()
 server.use("/dist", express.static("dist"))
@@ -78,7 +79,7 @@ app.get("/admin/domains", async (req, res) => {
 app.post("/admin/domains", async (req, res) => {
     if (!req.body.domain) { flashError(req, res, "No domain provided.", "/admin/domains") }
     const enable = req.body.enable === "on" ? true : false
-    crawler.setDomainEnabled(req.body.domain, enable)
+    models.setDomainEnabled(models.findDomain(req.body.domain).id, enable)
     req.flash("info", `${enable ? "Enabled" : "Disabled"} crawling of domain ${req.body.domain}.`)
     res.redirect("/admin/domains")
 })
@@ -87,7 +88,7 @@ app.post("/admin/crawl", async (req, res) => {
     if (!req.body.url) { flashError(req, res, "No URL provided.", "/admin") }
     try {
         const url = new URL(req.body.url)
-        crawler.addToCrawlQueue(url)
+        await crawler.enqueueCrawl(url)
         log.info(`Queueing ${url}`)
         req.flash("info", `Added ${url} to queue.`)
     } catch(e) {

@@ -2,6 +2,6 @@ extends layout.pug
 
 block content
     h1 Log in
-    form(action="/login", method="POST")
+    form(method="POST")
         input(type="password", name="password", placeholder="Password")
         input(type="submit", value="Log in")

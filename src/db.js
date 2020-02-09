@@ -27,7 +27,8 @@ CREATE TABLE links (
 CREATE TABLE domains (
     id INTEGER PRIMARY KEY,
     domain TEXT NOT NULL UNIQUE,
-    enabled BOOL NOT NULL
+    enabled BOOL NOT NULL,
+    robotsPolicy TEXT
 );
 
 CREATE TABLE pages (
@@ -44,8 +45,7 @@ CREATE TABLE crawl_queue (
     url TEXT NOT NULL UNIQUE,
     lockTime INTEGER,
     added INTEGER NOT NULL,
-    domain INTEGER NOT NULL REFERENCES domains(id),
-    domainEnabled BOOL NOT NULL
+    domain INTEGER NOT NULL REFERENCES domains(id)
 );
 `,
 `

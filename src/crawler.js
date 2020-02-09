@@ -4,10 +4,12 @@ const stemmer = require("stemmer")
 const R = require("ramda")
 const mimeTypes = require("mime-types")
 const parseHTML = htmlParser.parse
+const robotsParser = require("robots-parser")
 
 const log = require("./log.js")
-const DB = require("./db.js")
 const util = require("./util.js")
+const DB = require("./db.js")
+const models = require("./models.js")
 
 // Extract all the text from a node-html-parser DOM-tree-ish thing
 // Should probably be adapted to deal with <span>s and whatnot in the middle of words,
@@ -61,28 +63,6 @@ const toWeights = tokens => {
     return weights
 }
 
-const insertPageQuery = DB.prepare(`INSERT OR REPLACE INTO pages (url, rawContent, rawFormat, updated, domain) VALUES (?, ?, ?, ?, ?)`)
-const findPageQuery = DB.prepare(`SELECT id FROM pages WHERE url = ?`)
-const clearPageTokensQuery = DB.prepare(`DELETE FROM page_tokens WHERE page = ?`)
-const insertPageTokenQuery = DB.prepare(`INSERT INTO page_tokens (page, token, weight) VALUES (?, ?, ?)`)
-const insertPageTransaction = DB.transaction((url, compressedRaw, tokens, domainID) => {
-    // Find page matching URL to clear associated tokens if it exists
-    const foundID = findPageQuery.get(url)
-    if (foundID) { clearPageTokensQuery.run(foundID.id) }
-
-    // Insert new row for the page
-    const id = insertPageQuery.run(url, compressedRaw, "zlib", util.timestamp(), domainID).lastInsertRowid
-
-    // Insert each token
-    tokens.forEach((weight, token) => insertPageTokenQuery.run(id, token, weight))
-})
-const insertPage = async (url, raw, tokens, domainID) => insertPageTransaction(url, await util.zlibCompress(raw), tokens, domainID)
-
-const findDomainQuery = DB.prepare(`SELECT id, enabled FROM domains WHERE domain = ?`)
-const createDomainQuery = DB.prepare(`INSERT INTO domains (domain, enabled) VALUES (?, 0)`)
-const addLinkQuery = DB.prepare(`INSERT OR REPLACE INTO links (toURL, fromURL, lastSeen) VALUES (?, ?, ?)`)
-const pushCrawlQueueQuery = DB.prepare(`INSERT OR REPLACE INTO crawl_queue (url, added, domain, domainEnabled) VALUES (?, ?, ?, ?)`)
-
 const acceptableMIMETypes = [
     "text/",
     "application/xml"
@@ -101,27 +81,17 @@ const shouldCrawl = url => {
     return acceptMIMEType(mime)
 }
 
-const addToCrawlQueue = toURL => {
-    // Attempt to find entry for host
-    const domain = findDomainQuery.get(toURL.hostname)
-    let domainID, domainEnabled
-    // If it doesn't exist, create one. It will be disabled by default.
-    if (!domain) { domainID = createDomainQuery.run(toURL.hostname).lastInsertRowid; domainEnabled = 0 }
-    else { domainID = domain.id; domainEnabled = domain.enabled }
-    // Add entry to crawl queue
-    pushCrawlQueueQuery.run(toURL.toString(), util.timestamp(), domainID, domainEnabled)
-}
-
-const handleLink = DB.transaction((fromURL, toURL) => {
-    log.info(`${fromURL} → ${toURL}`)
-
-    // Add this link to the links table
-    addLinkQuery.run(toURL.toString(), fromURL, util.timestamp())
-    // If page does not exist and it should be crawled, add it to the queue
-    if (!findPageQuery.get(toURL.toString()) && shouldCrawl(toURL)) {
-        addToCrawlQueue(toURL)
+const enqueueCrawl = crawlURL => {
+    let domain = models.findDomain(crawlURL.hostname)
+    if (!domain) {
+        // robotsPolicy will be filled in on first actual crawl for the domain
+        var domainID = models.createDomain(crawlURL.hostname, false, null)
+    } else {
+        var domainID = domain.id
     }
-})
+    // Add entry to crawl queue
+    models.enqueueCrawl(crawlURL.toString(), domainID)
+}
 
 const processLink = (linkURL, baseURL) => {
     const absoluteURL = new URL(linkURL, baseURL)
@@ -131,7 +101,44 @@ const processLink = (linkURL, baseURL) => {
     return absoluteURL
 }
 
-const crawl = async rawURL => {
+const getRobotsTxtUrl = domain => `https://${domain}/robots.txt`
+
+const fetchRobotsTxt = async domain => {
+    const response = await got(getRobotsTxtUrl(domain), {
+        timeout: 5000,
+        headers: { "user-agent": util.userAgent },
+        throwHttpErrors: false
+    })
+    if (response.statusCode !== 200) { // assume any error or whatever means no robots.txt is present
+        return null
+    } else {
+        return response.body
+    }
+}
+
+const robotsTxtCache = new Map()
+const parseRobotsTxt = (content, domain) => {
+    const cached = robotsTxtCache.get(content)
+    if (cached) { return cached }
+    const robots = robotsParser(getRobotsTxtUrl(domain), content)
+    robotsTxtCache.set(content, robots)
+    return robots
+}
+
+const crawl = async (rawURL, domainID) => {
+    const domainInfo = models.getDomain(domainID)
+    if (domainInfo.robotsPolicy === null) {
+        let policy = await fetchRobotsTxt(domainInfo.domain)
+        if (policy === null) { policy = "none" } // distinguish between "policy not downloaded" and "no detected policy"
+        domainInfo.robotsPolicy = policy
+        models.updateRobotsPolicy(domainID, policy)
+    }
+    const robotsPolicy = parseRobotsTxt(domainInfo.robotsPolicy, domainInfo.domain)
+    if (robotsPolicy.isDisallowed(rawURL, util.userAgent)) {
+        log.warning(`${rawURL} access denied in robots policy`)
+        return
+    }
+
     const pageURL = new URL(rawURL)
     // Download page
     const response = await got(pageURL, {
@@ -141,8 +148,6 @@ const crawl = async rawURL => {
             "accept": `text/html, text/plain;q=0.8, text/*;q=0.7`
         }
     })
-    
-    const domain = findDomainQuery.get(pageURL.hostname).id
 
     const contentType = response.headers["content-type"]
     if (!acceptMIMEType(contentType)) {
@@ -163,41 +168,34 @@ const crawl = async rawURL => {
 
     const tokens = util.toTokens(text)
     const weights = toWeights(tokens)
-    insertPage(rawURL, response.body, weights, domain)
+    const compressed = await util.zlibCompress(response.body)
+    models.insertPage(rawURL, compressed, "zlib", weights, domainID)
     // Add links to links table/crawl queue
-    absoluteLinks.forEach(link => handleLink(rawURL, link))
+    DB.transaction(() => {
+        absoluteLinks.forEach(link => {
+            log.info(`Link: ${rawURL} → ${link.toString()}`)
+            models.createLink(link.toString(), rawURL)
+            if (shouldCrawl(link) && !models.getPageID(link.toString())) {
+                enqueueCrawl(link)
+            }
+        })
+    })()
 }
-
-const setEnabledDomainQuery = DB.prepare(`UPDATE domains SET enabled = ? WHERE id = ?`)
-const setEnabledCrawlQueueQuery = DB.prepare(`UPDATE crawl_queue SET domainEnabled = ? WHERE domain = ?`)
-
-// Enable/disable crawling for a domain and associated queue entries
-const setDomainEnabled = (domain, enable) => {
-    log.info(`Crawling ${domain} ${enable ? "enabled" : "disabled"}`)
-    const domainID = findDomainQuery.get(domain).id
-    setEnabledDomainQuery.run(util.boolToNum(enable), domainID)
-    setEnabledCrawlQueueQuery.run(util.boolToNum(enable), domainID)
-}
-
-const findNextCrawlQuery = DB.prepare(`SELECT * FROM crawl_queue WHERE lockTime IS NULL AND domainEnabled = 1 ORDER BY RANDOM() LIMIT 1`)
-const lockQuery = DB.prepare(`UPDATE crawl_queue SET lockTime = ? WHERE id = ?`)
-const unlockQuery = DB.prepare(`UPDATE crawl_queue SET lockTime = NULL WHERE id = ?`)
-const removeFromQueueQuery = DB.prepare(`DELETE FROM crawl_queue WHERE id = ?`)
 
 const crawlRandom = async () => {
     // Pick a random enabled and unlocked entry from the crawl queue
-    const next = findNextCrawlQuery.get()
+    const next = models.findNextCrawl()
     if (next) {
         // Lock entry
-        lockQuery.run(util.timestamp(), next.id)
+        models.lockCrawl(next.id)
         try {
             // Attempt to crawl page, then remove it from queue
-            await crawl(next.url)
-            removeFromQueueQuery.run(next.id)
+            await crawl(next.url, next.domain)
+            models.removeCrawl(next.id)
         } catch(e) {
             // Unlock on error
             log.error(`Error when crawling ${next.url}:\n${e.stack}`)
-            unlockQuery.run(next.id)
+            models.unlockCrawl(next.id)
         }
 
         return true
@@ -208,7 +206,6 @@ const crawlRandom = async () => {
 
 module.exports = {
     crawl,
-    addToCrawlQueue,
-    setDomainEnabled,
-    crawlRandom
+    crawlRandom,
+    enqueueCrawl
 }

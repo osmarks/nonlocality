@@ -16,6 +16,7 @@
     "node-html-parser": "^1.2.4",
     "pug": "^2.0.4",
     "ramda": "^0.27.0",
+    "robots-parser": "^2.1.1",
     "stemmer": "^1.0.5",
     "stylus": "^0.54.7",
     "toml": "^3.0.0"
