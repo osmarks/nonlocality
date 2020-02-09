@@ -202,8 +202,6 @@ const crawlRandom = async () => {
 
         return true
     } else {
-        log.info("Crawl queue empty")
-
         return false
     }
 }
