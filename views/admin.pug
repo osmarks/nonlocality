@@ -4,7 +4,7 @@ block content
     div.admin
         div
             form(action="/admin/crawl", method="POST")
-                input(type="text", name="url", placeholder="Crawl URL")
+                input(type="url", name="url", placeholder="Crawl URL")
                 input(type="submit", value="Submit")
         div
             a(href="/admin/domains") Domains
