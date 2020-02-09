@@ -9,7 +9,7 @@ html
                 each flash in flashArray
                     div(class=`flash flash-${flashType}`)= flash
         if searchForm != false
-            form.search-form(action="/search", method="POST")
+            form.search-form(action="/search", method="GET")
                 input.search-input(type="search", name="query", placeholder="Search")
                 input.search-button(type="submit", value="Search")
         main

@@ -105,10 +105,12 @@ app.post("/admin/logout", async (req, res) => {
     res.redirect("/")
 })
 
-app.post("/search", async (req, res) => {
-    const results = search(req.body.query)
+app.get("/search", async (req, res) => {
+    const query = req.query.query
+    if (!query) { flashError(req, res, "No query provided.", "/") }
+    const results = search(query)
     results.list.forEach(x => { x.updated = dateFns.format(x.updated, "HH:mm:ss dd/MM/yyyy") })
-    res.render("search-results", { title: `"${req.body.query}" search results`, results })
+    res.render("search-results", { title: `"${query}" search results`, results })
 })
 
 server.locals.package = util.package

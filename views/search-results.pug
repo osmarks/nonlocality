@@ -3,10 +3,9 @@ extends layout.pug
 block content
     div= `Searching for "${results.query}"`
     div= `Completed in ${results.time}ms`
+    div= `${results.list.length} results`
 
-    if results.list.length == 0
-        div No results.
-    else
+    if results.list.length != 0
         h2 Results
         table.search-results
             tr
