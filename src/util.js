@@ -24,5 +24,5 @@ module.exports = {
     boolToNum,
     numToBool,
     toTokens,
-    applicationName: package.name
+    package
 }

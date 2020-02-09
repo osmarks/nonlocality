@@ -110,7 +110,7 @@ app.post("/search", async (req, res) => {
     res.render("search-results", { title: `"${req.body.query}" search results`, results })
 })
 
-server.locals.applicationName = util.applicationName
+server.locals.package = util.package
 
 server.use(app)
 
