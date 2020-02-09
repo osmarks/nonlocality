@@ -1,4 +1,4 @@
-# myrkheim
+# nonlocality
 
 A simple, small-scale search engine.
 
