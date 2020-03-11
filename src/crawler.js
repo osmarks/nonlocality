@@ -9,7 +9,6 @@ const robotsParser = require("robots-parser")
 const log = require("./log.js")
 const util = require("./util.js")
 const DB = require("./db.js")
-const models = require("./models.js")
 
 // Extract all the text from a node-html-parser DOM-tree-ish thing
 // Should probably be adapted to deal with <span>s and whatnot in the middle of words,
@@ -81,16 +80,20 @@ const shouldCrawl = url => {
     return acceptMIMEType(mime)
 }
 
-const enqueueCrawl = crawlURL => {
-    let domain = models.findDomain(crawlURL.hostname)
+const enqueueCrawl = async crawlURL => {
+    let [domain] = await DB`SELECT * FROM domains WHERE domain = ${crawlURL.hostname}`
     if (!domain) {
         // robotsPolicy will be filled in on first actual crawl for the domain
-        var domainID = models.createDomain(crawlURL.hostname, false, null)
+        const [result] = await DB`INSERT INTO domains (domain, enabled, robotsPolicy) 
+        VALUES (${crawlURL.hostname}, FALSE, NULL) RETURNING id`
+        var domainID = result.id
     } else {
         var domainID = domain.id
     }
     // Add entry to crawl queue
-    models.enqueueCrawl(crawlURL.toString(), domainID)
+    await DB`INSERT INTO crawl_queue (url, domain)
+    VALUES (${crawlURL.toString()}, ${domainID})
+    ON CONFLICT (url) DO UPDATE SET added = NOW()`
 }
 
 const processLink = (linkURL, baseURL) => {
@@ -125,13 +128,36 @@ const parseRobotsTxt = (content, domain) => {
     return robots
 }
 
+const getPageID = async url => {
+    const [result] = await DB`SELECT id FROM pages WHERE url = ${url}`
+    return result != undefined ? result.id : null
+}
+
+const insertPage = async (url, raw, format, tokens, domainID) => {
+    const foundID = await getPageID(url)
+    return DB.begin(async tx => {
+        if (foundID) {
+            DB`DELETE FROM page_tokens WHERE page = ${foundID}`
+        }
+        const [result] = await DB`INSERT INTO pages (url, rawContent, rawFormat, domain)
+        VALUES (${url}, ${raw}, ${format}, ${domainID})
+        ON CONFLICT (url) DO UPDATE SET rawContent = excluded.rawContent, rawFormat = excluded.rawFormat
+        RETURNING id`
+        const newID = result.id
+        const tokenRows = []
+        tokens.forEach((weight, token) => { tokenRows.push({ page: newID, token, weight }) })
+        await DB`INSERT INTO page_tokens ${DB(tokenRows, "page", "token", "weight")}`
+        return newID
+    })
+}
+
 const crawl = async (rawURL, domainID) => {
-    const domainInfo = models.getDomain(domainID)
-    if (domainInfo.robotsPolicy === null) {
+    const [domainInfo] = await DB`SELECT * FROM domains WHERE id = ${domainID}`
+    if (!domainInfo.robotsPolicy) {
         let policy = await fetchRobotsTxt(domainInfo.domain)
         if (policy === null) { policy = "none" } // distinguish between "policy not downloaded" and "no detected policy"
         domainInfo.robotsPolicy = policy
-        models.updateRobotsPolicy(domainID, policy)
+        await DB`UPDATE domains SET robotsPolicy = ${policy} WHERE id = ${domainID}`
     }
     const robotsPolicy = parseRobotsTxt(domainInfo.robotsPolicy, domainInfo.domain)
     if (robotsPolicy.isDisallowed(rawURL, util.userAgent)) {
@@ -169,33 +195,38 @@ const crawl = async (rawURL, domainID) => {
     const tokens = util.toTokens(text)
     const weights = toWeights(tokens)
     const compressed = await util.zlibCompress(response.body)
-    models.insertPage(rawURL, compressed, "zlib", weights, domainID)
+
+    const pageID = await insertPage(rawURL, compressed, "zlib", weights, domainID)
+
     // Add links to links table/crawl queue
-    DB.transaction(() => {
-        absoluteLinks.forEach(link => {
-            log.info(`Link: ${rawURL} → ${link.toString()}`)
-            models.createLink(link.toString(), rawURL)
-            if (shouldCrawl(link) && !models.getPageID(link.toString())) {
-                enqueueCrawl(link)
-            }
-        })
-    })()
+    Promise.all(absoluteLinks.map(async link => {
+        await DB`INSERT INTO links (toURL, fromPage) VALUES (${link.toString()}, ${pageID})
+        ON CONFLICT (toURL, fromPage) DO UPDATE SET lastSeen = NOW()`
+        if (shouldCrawl(link) && !(await getPageID(link.toString()))) {
+            log.info(`Queueing ${link.toString()} for potential crawling.`)
+            await enqueueCrawl(link)
+        }
+    }))
 }
 
 const crawlRandom = async () => {
     // Pick a random enabled and unlocked entry from the crawl queue
-    const next = models.findNextCrawl()
+    const [next] = await DB`SELECT crawl_queue.id, crawl_queue.url, crawl_queue.domain
+    FROM crawl_queue
+    INNER JOIN domains ON domains.id = crawl_queue.domain
+    WHERE lockTime IS NULL AND domains.enabled = TRUE
+    ORDER BY RANDOM() LIMIT 1`
     if (next) {
         // Lock entry
-        models.lockCrawl(next.id)
+        await DB`UPDATE crawl_queue SET lockTime = NOW() where id = ${next.id}`
         try {
             // Attempt to crawl page, then remove it from queue
             await crawl(next.url, next.domain)
-            models.removeCrawl(next.id)
+            await DB`DELETE FROM crawl_queue WHERE id = ${next.id}`
         } catch(e) {
             // Unlock on error
             log.error(`Error when crawling ${next.url}:\n${e.stack}`)
-            models.unlockCrawl(next.id)
+            await DB`UPDATE crawl_queue SET lockTime = NULL where id = ${next.id}`
         }
 
         return true

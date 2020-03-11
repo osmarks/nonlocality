@@ -5,13 +5,12 @@ const flash = require("connect-flash")
 const dateFns = require("date-fns")
 const crypto = require("crypto")
 
-const search = require("./search.js")
 const crawler = require("./crawler.js")
 const log = require("./log.js")
 const DB = require("./db.js")
 const util = require("./util.js")
 const config = require("./config.js")
-const models = require("./models.js")
+const search = require("./search.js")
 
 setInterval(() => crawler.crawlRandom(), config("crawler.crawl_delay", 1000))
 
@@ -68,18 +67,16 @@ app.get("/admin", async (req, res) => {
     res.render("admin", { title: "Admin" })
 })
 
-const listDomainsQuery = DB.prepare(`SELECT * FROM domains`)
 
 app.get("/admin/domains", async (req, res) => {
-    const domains = listDomainsQuery.all()
-    domains.forEach(domain => { domain.enabled = util.numToBool(domain.enabled) })
+    const domains = await DB`SELECT * FROM domains ORDER BY domain ASC`
     res.render("domains-list", { title: "Configure Domains", domains })
 })
 
 app.post("/admin/domains", async (req, res) => {
     if (!req.body.domain) { flashError(req, res, "No domain provided.", "/admin/domains") }
     const enable = req.body.enable === "on" ? true : false
-    models.setDomainEnabled(models.findDomain(req.body.domain).id, enable)
+    DB`UPDATE domains SET enabled = ${enable} WHERE domain = ${req.body.domain}`
     req.flash("info", `${enable ? "Enabled" : "Disabled"} crawling of domain ${req.body.domain}.`)
     res.redirect("/admin/domains")
 })
@@ -108,7 +105,7 @@ app.post("/admin/logout", async (req, res) => {
 app.get("/search", async (req, res) => {
     const query = req.query.query
     if (!query) { flashError(req, res, "No query provided.", "/") }
-    const results = search(query)
+    const results = await search(query)
     results.list.forEach(x => { x.updated = dateFns.format(x.updated, "HH:mm:ss dd/MM/yyyy") })
     res.render("search-results", { title: `"${query}" search results`, results })
 })

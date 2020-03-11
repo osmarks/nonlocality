@@ -4,7 +4,6 @@
   "description": "",
   "license": "MIT",
   "dependencies": {
-    "better-sqlite3": "^5.4.3",
     "chalk": "^3.0.0",
     "connect-flash": "^0.1.1",
     "cookie-session": "^1.4.0",
@@ -14,6 +13,7 @@
     "got": "^10.4.0",
     "mime-types": "^2.1.26",
     "node-html-parser": "^1.2.4",
+    "postgres": "^1.0.2",
     "pug": "^2.0.4",
     "ramda": "^0.27.0",
     "robots-parser": "^2.1.1",

@@ -1,79 +1,91 @@
-const database = require("better-sqlite3")
+const postgres = require("postgres")
 
 const log = require("./log.js")
 const config = require("./config.js")
 
-const DB = database(config("application.database_path", "db.sqlite3"))
+const DB = postgres(config("application.database"), {
+    onnotice: notice => log.info(`DB notice: ${notice.message}`)
+})
 
 const migrations = [
 `
-CREATE TABLE page_tokens (
-    id INTEGER PRIMARY KEY,
-    page INTEGER NOT NULL REFERENCES pages(id),
-    token TEXT NOT NULL,
-    weight REAL NOT NULL
-);
-
-CREATE INDEX page_tokens_ix ON page_tokens(token);
-
-CREATE TABLE links (
-    id INTEGER PRIMARY KEY,
-    toURL TEXT NOT NULL,
-    fromURL TEXT NOT NULL,
-    lastSeen INTEGER NOT NULL,
-    UNIQUE (toURL, fromURL)
-);
-
 CREATE TABLE domains (
-    id INTEGER PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     domain TEXT NOT NULL UNIQUE,
     enabled BOOL NOT NULL,
     robotsPolicy TEXT
 );
 
 CREATE TABLE pages (
-    id INTEGER PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     url TEXT NOT NULL UNIQUE,
-    rawContent BLOB NOT NULL,
+    rawContent BYTEA NOT NULL,
     rawFormat TEXT NOT NULL,
-    updated INTEGER NOT NULL,
-    domain INTEGER NOT NULL REFERENCES domains(id)
+    updated TIMESTAMP NOT NULL DEFAULT NOW(),
+    domain SERIAL NOT NULL REFERENCES domains(id)
+);
+
+CREATE TABLE page_tokens (
+    id SERIAL PRIMARY KEY,
+    page INTEGER NOT NULL REFERENCES pages(id),
+    token TEXT NOT NULL,
+    weight DOUBLE PRECISION NOT NULL
+);
+
+CREATE INDEX page_tokens_ix ON page_tokens(token);
+
+CREATE TABLE links (
+    id SERIAL PRIMARY KEY,
+    toURL TEXT NOT NULL,
+    fromPage SERIAL NOT NULL REFERENCES pages(id),
+    lastSeen TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (toURL, fromPage)
 );
 
 CREATE TABLE crawl_queue (
-    id INTEGER PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     url TEXT NOT NULL UNIQUE,
-    lockTime INTEGER,
-    added INTEGER NOT NULL,
-    domain INTEGER NOT NULL REFERENCES domains(id)
+    lockTime TIMESTAMP,
+    added TIMESTAMP NOT NULL DEFAULT NOW(),
+    domain SERIAL NOT NULL REFERENCES domains(id)
 );
-`,
-`
+
 CREATE TABLE search_history (
-    id INTEGER PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     query TEXT NOT NULL,
-    timestamp INTEGER NOT NULL,
+    timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
     quantityResults INTEGER,
     timeTaken REAL
-)
+);
 `
 ]
 
-const executeMigration = DB.transaction((i) => {
-    const migration = migrations[i]
-    DB.exec(migration)
-    DB.pragma(`user_version = ${i + 1}`)
-    log.info(`Migrated to schema ${i + 1}`)
-})
-
-const schemaVersion = DB.pragma("user_version", { simple: true })
-if (schemaVersion < migrations.length) {
-    log.info(`Migrating DB - schema ${schemaVersion} used, schema ${migrations.length} available`)
-    for (let i = schemaVersion; i < migrations.length; i++) {
-        executeMigration(i)
+const migrate = async () => {
+    await DB`
+    CREATE TABLE IF NOT EXISTS migrations (
+        id INTEGER PRIMARY KEY,
+        executed TIMESTAMP NOT NULL
+    )
+    `
+    const [result] = await DB`SELECT MAX(id) FROM migrations`
+    const migrationExecuted = result.max || 0
+    for (let i = migrationExecuted; i < migrations.length; i++) {
+        try {
+            await DB.begin(async tx => {
+                await tx.unsafe(migrations[i])
+                await tx`INSERT INTO migrations (id, executed) VALUES (${i + 1}, NOW())`
+            })
+        } catch(e) {
+            log.error(`Migration ${i + 1}: ${e}`)
+            await DB.end()
+            process.exit()
+        }
+        log.info(`Migrated DB to schema ${i + 1}`)
     }
+
+    return
 }
 
-DB.pragma("foreign_keys = 1")
+migrate()
 
 module.exports = DB
