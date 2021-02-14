@@ -70,7 +70,7 @@ app.get("/admin", async (req, res) => {
 
 
 app.get("/admin/domains", async (req, res) => {
-    const domains = await DB`SELECT * FROM domains ORDER BY tier, domain ASC`
+    const domains = await DB`SELECT * FROM domains ORDER BY enabled DESC, tier, domain ASC`
     res.render("domains-list", { title: "Configure Domains", domains })
 })
 
