@@ -163,12 +163,23 @@ export const crawl = async (rawURL, domainID) => {
             "user-agent": util.userAgent,
             "accept": `text/html, text/plain;q=0.8, text/*;q=0.7`,
         },
-        followRedirect: false
+        followRedirect: false,
+        throwHttpErrors: false
     })
     // redirect
     if (response.statusCode >= 300 && response.statusCode <= 399) {
+        log.info(`redirect at ${rawURL}`)
         await enqueueCrawl(new URL(response.headers["location"], pageURL), domainInfo.tier + 1)
         return
+    }
+    // assume this is a dead/unusable link in case of 4xx code
+    if (response.statusCode >= 400 && response.statusCode <= 499) {
+        log.warning(`dead link at ${rawURL} status ${response.statusCode}`)
+        return
+    }
+    // try again later
+    if (response.statusCode >= 500) {
+        throw new Error(`status code ${response.statusCode} from remote`)
     }
 
     const contentType = response.headers["content-type"]
