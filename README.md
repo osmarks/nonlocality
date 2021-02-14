@@ -1,12 +1,5 @@
 # nonlocality
 
-A simple, small-scale search engine.
-
-Only crawls explicitly whitelisted domains, though currently pays no attention to `robots.txt`.
-
-## How to use
-
-1. Install dependencies: `npm install`.
-2. Copy `config.example.toml` to `config.toml` and make the necessary changes for your setup (*please* change the session secret and password hash).
-3. Start the application (node `src/index.js`) (for an actual server setup you will want to use a service manager of some sort).
-4. Access the `/admin` page and submit a URL to crawl, then enable iton the Domains page.
+A simple, small-scale search engine which basically just works as a crawler + frontend to PostgreSQL full text search (which is admittedly not particularly good).
+It now probably obeys robots.txt, and crawls only explicitly enabled domains.
+As suggested [here](https://drewdevault.com/2020/11/17/Better-than-DuckDuckGo.html) ranking is based on per-domain tiers instead of complex PageRank-type things.

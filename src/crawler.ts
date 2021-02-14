@@ -1,21 +1,28 @@
-const got = require("got")
-const htmlParser = require("node-html-parser")
-const stemmer = require("stemmer")
-const R = require("ramda")
+import got from "got"
+import { parse as parseHTML } from "node-html-parser"
+import * as htmlParser from "node-html-parser"
+import * as R from "ramda"
+import { decode as decodeHTMLEntities } from "he"
 const mimeTypes = require("mime-types")
-const parseHTML = htmlParser.parse
 const robotsParser = require("robots-parser")
 
-const log = require("./log.js")
-const util = require("./util.js")
-const DB = require("./db.js")
+import * as log from "./log"
+import * as util from "./util"
+import DB from "./db"
+
+const ignoreElements = new Set(["TEMPLATE", "SCRIPT", "STYLE", "NOSCRIPT", "PRE"])
+const blockElements = new Set(["P", "LI", "DIV", "H1", "H2", "H3", "H4", "H5", "H6", "TR", "TABLE", "MAIN", "IMG", "HR", "BR", 
+    "SECTION", "NAV", "ARTICLE", "ASIDE", "FOOTER", "FORM", "UL", "OL"])
 
 // Extract all the text from a node-html-parser DOM-tree-ish thing
 // Should probably be adapted to deal with <span>s and whatnot in the middle of words,
 // though that might not be common enough to be worth it
 const extractText = node => {
-    if (node instanceof htmlParser.TextNode) { return node.rawText.replace(/\n/g, "") }
-    return node.childNodes.map(x => extractText(x).trim()).join(" ")
+    if (ignoreElements.has(node.tagName)) { return "" }
+    if (node instanceof htmlParser.TextNode && node.rawText.startsWith("<!DOCTYPE")) { return "" }
+    if (node instanceof htmlParser.TextNode) { return decodeHTMLEntities(node.text.replace(/\n/g, " ")).trim() }
+    const blockEnds = (blockElements.has(node.tagName) ? "\n" : "")
+    return node.childNodes.map(extractText).filter(x => x.trim() !== "").join(" ").replace(/\n\n\n/g, "\n").replace(/\n /g, "\n") + blockEnds
 }
 
 // Finds the links on a page, and parses it to get text out
@@ -23,43 +30,31 @@ const parsePage = (page, url) => {
     const text = []
     const document = parseHTML(page)
 
-    const titleElement = document.querySelector("title")
     if (!document.querySelector("title")) {
         // If there *is* a title element it'll be added to the output of extractText anyway
         // If not, just guess what the title might be based on the URL
-        const fallback = url.pathname.replace(/[/_\-+]/g, " ").trim()
+        const fallback = url.pathname.replace(/[/_\-+]/g, " ").replace(/.[a-z]+$/, "").trim()
         text.push(fallback !== "" ? fallback : url.hostname)
     }
 
     // Extract content of keyword/description <meta> tags
-    for (meta of document.querySelectorAll("meta")) {
+    for (const meta of document.querySelectorAll("meta")) {
         const name = meta.getAttribute("name")
         const content = meta.getAttribute("content")
-        if ((name === "description" || name === "keywords") && content) {
+        if (name === "description" && content) {
             // strip HTML-tag-looking things
             text.push(content.replace(/<[^<>]+>/g, ""))
+        } else if (name === "keywords" && content) {
+            for (const x of content.split(",")) { text.push(x) }
         }
     }
 
-    text.push(extractText(document))
+    text.push(extractText(document).trim())
 
     // Find the "href" attributes of all links with those
     const links = document.querySelectorAll("a").map(node => node.getAttribute("href")).filter(x => x !== undefined)
 
-    return { text: text.join(" "), links }
-}
-
-// Count the frequency with which each token appears in the text, and divide by the total tokens
-const toWeights = tokens => {
-    const numTokens = tokens.length
-    const weights = new Map()
-    for (const token of tokens) {
-        weights.set(token, (weights.get(token) || 0) + 1)
-    }
-    for (const [token, frequency] of weights) {
-        weights.set(token, frequency / numTokens)
-    }
-    return weights
+    return { text: text.join("\n"), links, title: document.querySelector("title")?.text }
 }
 
 const acceptableMIMETypes = [
@@ -68,7 +63,7 @@ const acceptableMIMETypes = [
 ]
 
 const acceptMIMEType = mime => {
-    for (mimeType of acceptableMIMETypes) {
+    for (const mimeType of acceptableMIMETypes) {
         if (mime.startsWith(mimeType)) { return true }
     }
     return false
@@ -80,19 +75,20 @@ const shouldCrawl = url => {
     return acceptMIMEType(mime)
 }
 
-const enqueueCrawl = async crawlURL => {
-    let [domain] = await DB`SELECT * FROM domains WHERE domain = ${crawlURL.hostname}`
+export const enqueueCrawl = async (crawlURL, tier) => {
+    // robotsPolicy will be filled in on first actual crawl for the domain
+    // It would be nicer to do this in one query, but PostgreSQL is annoying about this and won't do anything with the RETURNING if nothng is actually updated
+    let [domain] = await DB`INSERT INTO domains (domain, enabled, robotsPolicy, tier) 
+    VALUES (${crawlURL.hostname}, FALSE, NULL, ${tier})
+    ON CONFLICT DO NOTHING
+    RETURNING id`
     if (!domain) {
-        // robotsPolicy will be filled in on first actual crawl for the domain
-        const [result] = await DB`INSERT INTO domains (domain, enabled, robotsPolicy) 
-        VALUES (${crawlURL.hostname}, FALSE, NULL) RETURNING id`
-        var domainID = result.id
-    } else {
-        var domainID = domain.id
+        let [row] = await DB`SELECT * FROM domains WHERE domain = ${crawlURL.hostname}`
+        domain = row
     }
     // Add entry to crawl queue
-    await DB`INSERT INTO crawl_queue (url, domain)
-    VALUES (${crawlURL.toString()}, ${domainID})
+    await DB`INSERT INTO crawl_targets (url, domain)
+    VALUES (${crawlURL.toString()}, ${domain.id})
     ON CONFLICT (url) DO UPDATE SET added = NOW()`
 }
 
@@ -112,7 +108,7 @@ const fetchRobotsTxt = async domain => {
         headers: { "user-agent": util.userAgent },
         throwHttpErrors: false
     })
-    if (response.statusCode !== 200) { // assume any error or whatever means no robots.txt is present
+    if (response.statusCode !== 200) { // assume any error means no robots.txt is present
         return null
     } else {
         return response.body
@@ -133,25 +129,16 @@ const getPageID = async url => {
     return result != undefined ? result.id : null
 }
 
-const insertPage = async (url, raw, format, tokens, domainID) => {
-    const foundID = await getPageID(url)
-    return DB.begin(async tx => {
-        if (foundID) {
-            DB`DELETE FROM page_tokens WHERE page = ${foundID}`
-        }
-        const [result] = await DB`INSERT INTO pages (url, rawContent, rawFormat, domain)
-        VALUES (${url}, ${raw}, ${format}, ${domainID})
-        ON CONFLICT (url) DO UPDATE SET rawContent = excluded.rawContent, rawFormat = excluded.rawFormat
-        RETURNING id`
-        const newID = result.id
-        const tokenRows = []
-        tokens.forEach((weight, token) => { tokenRows.push({ page: newID, token, weight }) })
-        await DB`INSERT INTO page_tokens ${DB(tokenRows, "page", "token", "weight")}`
-        return newID
-    })
+const insertPage = async (url, raw, format, domainID, text, title) => {
+    // TODO: Multiple language handling?
+    const [result] = await DB`INSERT INTO pages (url, rawContent, rawFormat, domain, fts, pageText, pageTitle)
+    VALUES (${url}, ${raw}, ${format}, ${domainID}, to_tsvector('english', ${text}), ${text}, ${title})
+    ON CONFLICT (url) DO UPDATE SET rawContent = excluded.rawContent, rawFormat = excluded.rawFormat, updated = NOW(), fts = to_tsvector('english', ${text}), pageText = ${text}, pageTitle = ${title}
+    RETURNING id`
+    return result.id
 }
 
-const crawl = async (rawURL, domainID) => {
+export const crawl = async (rawURL, domainID) => {
     const [domainInfo] = await DB`SELECT * FROM domains WHERE id = ${domainID}`
     if (!domainInfo.robotsPolicy) {
         let policy = await fetchRobotsTxt(domainInfo.domain)
@@ -159,21 +146,30 @@ const crawl = async (rawURL, domainID) => {
         domainInfo.robotsPolicy = policy
         await DB`UPDATE domains SET robotsPolicy = ${policy} WHERE id = ${domainID}`
     }
-    const robotsPolicy = parseRobotsTxt(domainInfo.robotsPolicy, domainInfo.domain)
-    if (robotsPolicy.isDisallowed(rawURL, util.userAgent)) {
-        log.warning(`${rawURL} access denied in robots policy`)
-        return
+    
+    if (domainInfo.robotsPolicy !== "none") {
+        const robotsPolicy = parseRobotsTxt(domainInfo.robotsPolicy, domainInfo.domain)
+        if (robotsPolicy.isDisallowed(rawURL, util.userAgent)) {
+            log.warning(`${rawURL} access denied in robots policy`)
+            return
+        }
     }
 
     const pageURL = new URL(rawURL)
     // Download page
-    const response = await got(pageURL, {
+    const response = await got(rawURL, {
         timeout: 5000,
         headers: {
             "user-agent": util.userAgent,
-            "accept": `text/html, text/plain;q=0.8, text/*;q=0.7`
-        }
+            "accept": `text/html, text/plain;q=0.8, text/*;q=0.7`,
+        },
+        followRedirect: false
     })
+    // redirect
+    if (response.statusCode >= 300 && response.statusCode <= 399) {
+        await enqueueCrawl(new URL(response.headers["location"], pageURL), domainInfo.tier + 1)
+        return
+    }
 
     const contentType = response.headers["content-type"]
     if (!acceptMIMEType(contentType)) {
@@ -183,7 +179,7 @@ const crawl = async (rawURL, domainID) => {
 
     log.info(`${rawURL} returned ${response.statusCode}`)
 
-    const { text, links } = parsePage(response.body, pageURL)
+    const { text, links, title } = parsePage(response.body, pageURL)
     // Process links (absolutize URLs, drop off query/hash params)
     // then filter for unique links, then drop non-HTTP(S) URLs
     const absoluteLinks = R.pipe(
@@ -192,51 +188,45 @@ const crawl = async (rawURL, domainID) => {
         R.filter(link => link.protocol === "http:" || link.protocol === "https:")
     )(links)
 
-    const tokens = util.toTokens(text)
-    const weights = toWeights(tokens)
     const compressed = await util.zlibCompress(response.body)
 
-    const pageID = await insertPage(rawURL, compressed, "zlib", weights, domainID)
+    const pageID = await insertPage(rawURL, compressed, "zlib", domainID, text, title)
 
     // Add links to links table/crawl queue
-    Promise.all(absoluteLinks.map(async link => {
+    // TODO: combine all enqueue operations here into one query
+    await Promise.all(absoluteLinks.map(async link => {
         await DB`INSERT INTO links (toURL, fromPage) VALUES (${link.toString()}, ${pageID})
         ON CONFLICT (toURL, fromPage) DO UPDATE SET lastSeen = NOW()`
         if (shouldCrawl(link) && !(await getPageID(link.toString()))) {
             log.info(`Queueing ${link.toString()} for potential crawling.`)
-            await enqueueCrawl(link)
+            await enqueueCrawl(link, domainInfo.tier + 1)
         }
     }))
 }
 
-const crawlRandom = async () => {
+export const crawlRandom = async () => {
     // Pick a random enabled and unlocked entry from the crawl queue
-    const [next] = await DB`SELECT crawl_queue.id, crawl_queue.url, crawl_queue.domain
-    FROM crawl_queue
-    INNER JOIN domains ON domains.id = crawl_queue.domain
+    const [next] = await DB`SELECT crawl_targets.id, crawl_targets.url, crawl_targets.domain
+    FROM crawl_targets TABLESAMPLE SYSTEM_ROWS(100)
+    INNER JOIN domains ON domains.id = crawl_targets.domain
     WHERE lockTime IS NULL AND domains.enabled = TRUE
-    ORDER BY RANDOM() LIMIT 1`
+    LIMIT 1`
     if (next) {
         // Lock entry
-        await DB`UPDATE crawl_queue SET lockTime = NOW() where id = ${next.id}`
+        await DB`UPDATE crawl_targets SET lockTime = NOW() where id = ${next.id}`
         try {
             // Attempt to crawl page, then remove it from queue
+            log.info(`Crawling ${next.url}`)
             await crawl(next.url, next.domain)
-            await DB`DELETE FROM crawl_queue WHERE id = ${next.id}`
+            await DB`DELETE FROM crawl_targets WHERE id = ${next.id}`
         } catch(e) {
             // Unlock on error
             log.error(`Error when crawling ${next.url}:\n${e.stack}`)
-            await DB`UPDATE crawl_queue SET lockTime = NULL where id = ${next.id}`
+            await DB`UPDATE crawl_targets SET lockTime = NULL where id = ${next.id}`
         }
 
         return true
     } else {
         return false
     }
-}
-
-module.exports = {
-    crawl,
-    crawlRandom,
-    enqueueCrawl
 }

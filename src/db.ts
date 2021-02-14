@@ -1,7 +1,7 @@
-const postgres = require("postgres")
+import postgres from "postgres"
 
-const log = require("./log.js")
-const config = require("./config.js")
+import * as log from "./log"
+import config from "./config"
 
 const DB = postgres(config("application.database"), {
     onnotice: notice => log.info(`DB notice: ${notice.message}`)
@@ -9,10 +9,13 @@ const DB = postgres(config("application.database"), {
 
 const migrations = [
 `
+CREATE EXTENSION IF NOT EXISTS tsm_system_rows;
+
 CREATE TABLE domains (
     id SERIAL PRIMARY KEY,
     domain TEXT NOT NULL UNIQUE,
     enabled BOOL NOT NULL,
+    tier INTEGER NOT NULL,
     robotsPolicy TEXT
 );
 
@@ -21,42 +24,39 @@ CREATE TABLE pages (
     url TEXT NOT NULL UNIQUE,
     rawContent BYTEA NOT NULL,
     rawFormat TEXT NOT NULL,
-    updated TIMESTAMP NOT NULL DEFAULT NOW(),
-    domain SERIAL NOT NULL REFERENCES domains(id)
+    updated TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    domain SERIAL NOT NULL REFERENCES domains(id),
+    pageText TEXT NOT NULL,
+    fts TSVECTOR NOT NULL,
+    pageTitle TEXT
 );
-
-CREATE TABLE page_tokens (
-    id SERIAL PRIMARY KEY,
-    page INTEGER NOT NULL REFERENCES pages(id),
-    token TEXT NOT NULL,
-    weight DOUBLE PRECISION NOT NULL
-);
-
-CREATE INDEX page_tokens_ix ON page_tokens(token);
 
 CREATE TABLE links (
     id SERIAL PRIMARY KEY,
     toURL TEXT NOT NULL,
     fromPage SERIAL NOT NULL REFERENCES pages(id),
-    lastSeen TIMESTAMP NOT NULL DEFAULT NOW(),
+    lastSeen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (toURL, fromPage)
 );
 
-CREATE TABLE crawl_queue (
+CREATE TABLE crawl_targets (
     id SERIAL PRIMARY KEY,
     url TEXT NOT NULL UNIQUE,
     lockTime TIMESTAMP,
-    added TIMESTAMP NOT NULL DEFAULT NOW(),
+    added TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     domain SERIAL NOT NULL REFERENCES domains(id)
 );
 
 CREATE TABLE search_history (
     id SERIAL PRIMARY KEY,
     query TEXT NOT NULL,
-    timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     quantityResults INTEGER,
     timeTaken REAL
 );
+`,
+`
+CREATE INDEX page_search_index ON pages USING GIN (fts);
 `
 ]
 
@@ -88,4 +88,4 @@ const migrate = async () => {
 
 migrate()
 
-module.exports = DB
+export default DB

@@ -1,14 +1,18 @@
 extends layout.pug
 
 block content
+    h1 Main Admin
+    form(action="/admin/logout", method="POST")
+        input(type="submit", value="Log out")
     div.admin
+        div= `${domainCount} domains (${enabledDomainCount} enabled)`
+        div= `${crawlTargets} possible crawl targets`
         div
             form(action="/admin/crawl", method="POST")
-                input(type="url", name="url", placeholder="Crawl URL")
+                span Crawl new URL: 
+                input(type="url", name="url", placeholder="URL")
                 input(type="submit", value="Submit")
         div
-            a(href="/admin/domains") Domains
+            a(href="/admin/domains") Manage Domains
 
-        div
-            form(action="/admin/logout", method="POST")
-                input(type="submit", value="Log out")
+        

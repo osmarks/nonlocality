@@ -1,13 +1,18 @@
 extends layout.pug
 
 block content
+    h1 Crawl Domains
     table
+        if domains.length == 0
+            div No domains configured. Add some initial URLs using the main interface.
         each domain in domains
             tr
                 td= domain.domain
 
                 td
                     input(type="checkbox", name="enable", checked=domain.enabled, form=`domain-${domain.id}`)
+                td
+                    input(type="number", name="tier", value=domain.tier, form=`domain-${domain.id}`)
                 td
                     form(method="POST", id=`domain-${domain.id}`)
                         input(type="submit", value="Save")

@@ -1,16 +1,13 @@
 extends layout.pug
 
 block content
+    include search-form.pug
+
     div
         h2 Info
         h3= package.name
         p.
-            This is an experimental search engine indexing a few manually selected domains.
-            For most general use you should probably just use <a href="https://duckduckgo.com/">DuckDuckGo</a> or similar services.
-            Search history is logged, but only as time, query, number of results and time taken (no user-specific details).
-            No special search query syntax is currently supported - inputs are tokenized similarly to page content.
-            Any page containing tokens present in your input will appear in the results, weighted by the sum of (proportion of tokens in page matching token in search / frequency of token in whole dataset).
-            This is done so that more common tokens are given less significance in results.
+            This is an experimental search engine which basically just works as a frontend for PostgreSQL full text search plus a basic crawler.
         p 
             | You can view the source code 
             a(href=package.repository.url) here
