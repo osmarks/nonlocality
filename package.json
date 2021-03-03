@@ -14,7 +14,7 @@
     "mime-types": "^2.1.28",
     "node-html-parser": "^1.4.9",
     "postgres": "^1.0.2",
-    "pug": "^2.0.4",
+    "pug": "^3.0.1",
     "ramda": "^0.27.1",
     "robots-parser": "^2.2.0",
     "stemmer": "^1.0.5",
